@@ -5,14 +5,21 @@ from typing import Union
 import spacy
 
 # Load Spacy NLP model
-nlp = spacy.load("en_core_web_trf")
+nlp = spacy.load("en_core_web_sm")
 
 
 class Scrub:
     def __init__(self):
         self.patterns = {
             "email": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
-            "phone": r"\b\(?\d{3}\)?[-\s]?\d{3}[-\s]?\d{4}\b",
+            "phone": [
+                r"\b\(?\d{3}\)?[-\s]?\d{3}[-\s]?\d{4}\b"
+                r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b",
+                r"\(\d{3}\)\s?\d{3}[-.]?\d{4}",
+                r"\b\d{3}\s\d{3}\s\d{4}\b",  # Format: 123 456 7890
+                r"\+\d{1,2}\s\d{1,3}\s\d{1,4}\s\d{4,5}-\d{4}\b",  # International format
+                r"\+\d{1,2}\s\d{3}\s\d{3}-\d{4}\b",  # International format: +X XXX XXX-XXXX
+            ],
             "ssn": r"\b\d{3}[-]?\d{2}[-]?\d{4}\b",
             "ip_address_v4": r"\b(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\b",
             "ip_address_v6": r"\b(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}\b",
@@ -24,13 +31,14 @@ class Scrub:
         scrubbed_text = text
         for category, pattern in self.patterns.items():
             if category == "phone":
-                matches = re.finditer(pattern, scrubbed_text)
-                for match in matches:
-                    matched_phone = match.group(0)
+                for pattern in self.patterns["phone"]:
+                    matches = re.finditer(pattern, scrubbed_text)
+                    for match in matches:
+                        matched_phone = match.group(0)
 
-                    # Remove parentheses from matched phone numbers
-                    matched_phone = re.sub(r"^\((\d{3})\)$", r"\1", matched_phone)
-                    scrubbed_text = scrubbed_text.replace(matched_phone, "[REDACTED]")
+                        # Remove parentheses from matched phone numbers
+                        matched_phone = re.sub(r"^\((\d{3})\)$", r"\1", matched_phone)
+                        scrubbed_text = scrubbed_text.replace(matched_phone, "[REDACTED]")
             else:
                 scrubbed_text = re.sub(pattern, "[REDACTED]", scrubbed_text)
 
@@ -38,12 +46,18 @@ class Scrub:
         return scrubbed_text
 
     def scrub_pii_with_nlp(self, text: str) -> str:
-        nlp_doc = nlp(text)
+        nlp_doc = self.nlp(text)
         final_text = text
+        redacted_names = {}  # To store unique names and their corresponding redaction labels
+        redaction_counter = 0  # To keep track of the redaction label index
 
         for name in nlp_doc.ents:
             if name.label_ == "PERSON":
-                final_text = re.sub(re.escape(name.text), "[REDACTED]", final_text)
+                if name.text not in redacted_names:  # Check if the name hasn't been redacted yet
+                    redacted_names[name.text] = f"[REDACTED_NAME_{redaction_counter}]"
+                    redaction_counter += 1
+                final_text = re.sub(re.escape(name.text), redacted_names[name.text], final_text, flags=re.IGNORECASE)
+
         return final_text
 
     def scrub(
